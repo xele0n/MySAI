@@ -1,0 +1,3 @@
+@echo off
+echo Starting MySAI - AI Playground...
+call npm run dev 
