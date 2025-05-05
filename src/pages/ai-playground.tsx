@@ -30,6 +30,8 @@ export default function AIPlayground() {
   const requestRef = useRef<number>()
   const [isSimulationRunning, setIsSimulationRunning] = useState(false)
   const [simulationState, setSimulationState] = useState<SimulationState | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [isServerConnected, setIsServerConnected] = useState(false)
   
   // Initialize the simulation when the component mounts
   useEffect(() => {
@@ -37,10 +39,27 @@ export default function AIPlayground() {
     
     // Set up canvas
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) {
+      setError("Canvas element not found");
+      return;
+    }
     
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      setError("Could not get canvas context");
+      return;
+    }
+    
+    // Draw initial state with message
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.font = '16px Arial';
+    ctx.fillStyle = '#000';
+    ctx.textAlign = 'center';
+    
+    if (!isServerConnected) {
+      ctx.fillText('Connecting to simulation server...', canvas.width / 2, canvas.height / 2);
+      ctx.fillText('Make sure the Python server is running (start_server.bat/sh)', canvas.width / 2, canvas.height / 2 + 30);
+    }
     
     // Set up animation loop
     const animate = () => {
@@ -59,11 +78,12 @@ export default function AIPlayground() {
         cancelAnimationFrame(requestRef.current);
       }
     };
-  }, [isSimulationRunning]);
+  }, [isSimulationRunning, isServerConnected]);
   
   // Initialize simulation by calling the Python API
   const initializeSimulation = async () => {
     try {
+      setError(null);
       const response = await fetch('http://localhost:5000/api/init', {
         method: 'POST',
         headers: {
@@ -72,25 +92,36 @@ export default function AIPlayground() {
       });
       
       if (!response.ok) {
-        throw new Error('Failed to initialize simulation');
+        throw new Error(`Failed to initialize simulation: ${response.status} ${response.statusText}`);
       }
       
       const data = await response.json();
       setGeneration(data.generation);
       setScore(data.best_fitness);
       setIsSimulationRunning(true);
+      setIsServerConnected(true);
+      console.log("Simulation initialized:", data);
     } catch (error) {
       console.error('Error initializing simulation:', error);
+      setError(`Failed to connect to simulation server: ${error instanceof Error ? error.message : String(error)}`);
+      setIsServerConnected(false);
+      
+      // Retry connection after 3 seconds
+      setTimeout(() => {
+        initializeSimulation();
+      }, 3000);
     }
   };
   
   // Step the simulation forward by calling the Python API
   const stepSimulation = async () => {
+    if (!isServerConnected) return;
+    
     try {
       const response = await fetch('http://localhost:5000/api/step');
       
       if (!response.ok) {
-        throw new Error('Failed to step simulation');
+        throw new Error(`Failed to step simulation: ${response.status} ${response.statusText}`);
       }
       
       const data = await response.json() as SimulationState;
@@ -99,12 +130,21 @@ export default function AIPlayground() {
       setScore(data.best_fitness);
     } catch (error) {
       console.error('Error stepping simulation:', error);
+      setError(`Simulation step failed: ${error instanceof Error ? error.message : String(error)}`);
+      setIsSimulationRunning(false);
+      setIsServerConnected(false);
+      
+      // Retry connection after 3 seconds
+      setTimeout(() => {
+        initializeSimulation();
+      }, 3000);
     }
   };
   
   // Reset the simulation by calling the Python API
   const resetSimulation = async () => {
     try {
+      setError(null);
       const response = await fetch('http://localhost:5000/api/reset', {
         method: 'POST',
         headers: {
@@ -113,27 +153,66 @@ export default function AIPlayground() {
       });
       
       if (!response.ok) {
-        throw new Error('Failed to reset simulation');
+        throw new Error(`Failed to reset simulation: ${response.status} ${response.statusText}`);
       }
       
       const data = await response.json();
       setGeneration(data.generation);
       setScore(data.best_fitness);
+      setIsServerConnected(true);
+      setIsSimulationRunning(true);
+      console.log("Simulation reset:", data);
     } catch (error) {
       console.error('Error resetting simulation:', error);
+      setError(`Reset failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
   
   // Draw the current simulation state on the canvas
   const drawSimulation = (ctx: CanvasRenderingContext2D) => {
-    if (!simulationState) return;
-    
-    const { walkers } = simulationState;
     const canvas = canvasRef.current;
     if (!canvas) return;
     
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // If there's an error, display it and return
+    if (error) {
+      ctx.font = '16px Arial';
+      ctx.fillStyle = 'red';
+      ctx.textAlign = 'center';
+      
+      // Split error message into multiple lines if needed
+      const errorLines = error.split('. ');
+      let yPos = canvas.height / 2 - (errorLines.length - 1) * 20;
+      
+      errorLines.forEach(line => {
+        ctx.fillText(line, canvas.width / 2, yPos);
+        yPos += 40;
+      });
+      
+      return;
+    }
+    
+    // If no simulation state yet, show loading
+    if (!simulationState || !simulationState.walkers || simulationState.walkers.length === 0) {
+      ctx.font = '16px Arial';
+      ctx.fillStyle = '#000';
+      ctx.textAlign = 'center';
+      ctx.fillText('Simulation running...', canvas.width / 2, canvas.height / 2);
+      
+      // Draw ground anyway
+      ctx.beginPath();
+      ctx.moveTo(0, 580);
+      ctx.lineTo(800, 580);
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = '#060a19';
+      ctx.stroke();
+      
+      return;
+    }
+    
+    const { walkers } = simulationState;
     
     // Draw ground
     ctx.beginPath();
@@ -145,6 +224,11 @@ export default function AIPlayground() {
     
     // Draw each walker
     walkers.forEach(walker => {
+      if (!walker.bodies || walker.bodies.length < 4) {
+        console.warn("Walker missing body parts:", walker);
+        return;
+      }
+      
       const [torso, head, leftLeg, rightLeg] = walker.bodies;
       
       // Draw torso (rectangle)
@@ -196,8 +280,8 @@ export default function AIPlayground() {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href="/favicon.ico" />
       </Head>
-      <main className="flex min-h-screen flex-col">
-        <div className="flex items-center justify-between p-4 border-b">
+      <main className="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-900">
+        <div className="flex items-center justify-between p-4 border-b bg-white dark:bg-gray-800 shadow-sm">
           <Link href="/" className="text-blue-500 hover:underline flex items-center">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clipRule="evenodd" />
@@ -205,16 +289,24 @@ export default function AIPlayground() {
             Back to Home
           </Link>
           <h1 className="text-xl font-bold">AI Learning Simulation</h1>
-          <button
-            onClick={resetSimulation}
-            className="px-4 py-2 rounded bg-blue-500 text-white hover:bg-blue-600"
-          >
-            Reset Simulation
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={resetSimulation}
+              className="px-4 py-2 rounded bg-blue-500 text-white hover:bg-blue-600"
+            >
+              Reset Simulation
+            </button>
+            <button
+              onClick={initializeSimulation}
+              className="px-4 py-2 rounded bg-green-500 text-white hover:bg-green-600"
+            >
+              Reconnect
+            </button>
+          </div>
         </div>
         
         <div className="flex-1 p-4">
-          <div className="flex justify-between mb-4">
+          <div className="flex justify-between mb-4 bg-white dark:bg-gray-800 p-3 rounded shadow-sm">
             <div className="text-lg">
               <span className="font-bold">Generation:</span> {generation}
             </div>
@@ -223,16 +315,16 @@ export default function AIPlayground() {
             </div>
           </div>
           
-          <div className="w-full max-w-4xl mx-auto border border-gray-300 rounded-lg overflow-hidden">
+          <div className="w-full max-w-4xl mx-auto border border-gray-300 rounded-lg overflow-hidden bg-white dark:bg-gray-800 shadow-md">
             <canvas 
               ref={canvasRef} 
               width={800} 
               height={600}
-              className="bg-gray-100"
+              className="bg-gray-100 dark:bg-gray-700"
             />
           </div>
           
-          <div className="mt-4 max-w-4xl mx-auto text-sm">
+          <div className="mt-4 max-w-4xl mx-auto text-sm bg-white dark:bg-gray-800 p-4 rounded shadow-sm">
             <p>
               This simulation shows AI agents learning to walk through a genetic algorithm and neural networks.
               Each agent has a neural network that controls its movement. The best performing agents are selected
@@ -242,6 +334,11 @@ export default function AIPlayground() {
               <strong>Note:</strong> This simulation runs using a Python backend with numpy for the neural network
               and pymunk for the physics simulation. Make sure the Python server is running at localhost:5000.
             </p>
+            {error && (
+              <p className="mt-2 text-red-500 font-bold">
+                Error: {error}
+              </p>
+            )}
           </div>
         </div>
       </main>
